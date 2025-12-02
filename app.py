@@ -1,9 +1,9 @@
 """
-Flask Voice Cloning App (Python 3.10 Compatible)
-================================================
+Flask Voice Synthesizer App (Python 3.13 Compatible)
+====================================================
 
 Instructions:
-1. Create a virtual environment:
+1. Create virtual environment:
    python -m venv venv
    source venv/bin/activate  # Windows: venv\Scripts\activate
 2. Install requirements:
@@ -12,12 +12,7 @@ Instructions:
    python app.py
 4. Uploaded files are saved in 'uploads/', generated audio in 'generated/'
 
-Open-source libraries used:
-- Flask
-- TTS (Coqui)
-- Resemblyzer
-- numpy, scipy, soundfile, werkzeug
-
+Note: Uses pyttsx3 offline TTS. No speaker cloning. 
 Use this system only for lawful, consensual use. Written consent required.
 """
 
@@ -26,11 +21,7 @@ import csv
 import datetime
 from flask import Flask, request, render_template_string, send_from_directory, redirect, flash
 from werkzeug.utils import secure_filename
-from pathlib import Path
-from TTS.api import TTS
-from resemblyzer import VoiceEncoder, preprocess_wav
-import soundfile as sf
-import numpy as np
+import pyttsx3
 
 UPLOAD_FOLDER = "uploads"
 GENERATED_FOLDER = "generated"
@@ -46,17 +37,14 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 app.secret_key = "replace_with_secure_random_key"
 
-# Load models (first run will download pre-trained models)
-try:
-    tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
-    encoder = VoiceEncoder()
-except Exception as e:
-    print("Error loading models:", e)
-    raise
+# Initialize TTS engine
+tts_engine = pyttsx3.init()
+tts_engine.setProperty("rate", 150)
+tts_engine.setProperty("volume", 1.0)
 
 HTML_TEMPLATE = """
 <!doctype html>
-<title>Voice Cloning App</title>
+<title>Voice Synthesizer App</title>
 <h2 style="color:red;">WARNING: Cloning voices without explicit written consent is illegal and prohibited.</h2>
 <form method=post enctype=multipart/form-data>
   <label>Upload reference audio (wav/mp3, max 10MB):</label><br>
@@ -101,12 +89,16 @@ def prepend_marker(text):
 def log_consent(speaker_name, requester_email, filename, ip):
     header = ["timestamp", "requester_email", "speaker_name", "uploaded_filename", "client_ip"]
     timestamp = datetime.datetime.utcnow().isoformat()
-    write_header = not Path(CONSENT_LOG).exists()
+    write_header = not os.path.exists(CONSENT_LOG)
     with open(CONSENT_LOG, "a", newline="") as f:
         writer = csv.writer(f)
         if write_header:
             writer.writerow(header)
         writer.writerow([timestamp, requester_email, speaker_name, filename, ip])
+
+def generate_audio(text, output_path):
+    tts_engine.save_to_file(text, output_path)
+    tts_engine.runAndWait()
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -122,7 +114,7 @@ def index():
         if not allowed_file(file.filename):
             flash("Invalid file type. Only wav/mp3 allowed.")
             return redirect(request.url)
-        text = request.form.get("text", "")
+        text = request.form.get("text", "").strip()
         if len(text) == 0 or len(text) > 500:
             flash("Text is required and must be <= 500 chars.")
             return redirect(request.url)
@@ -142,12 +134,9 @@ def index():
         log_consent(speaker_name, requester_email, filename, request.remote_addr)
 
         try:
-            wav = preprocess_wav(file_path)
-            embed = encoder.embed_utterance(wav)
             final_text = prepend_marker(text)
             output_path = os.path.join(GENERATED_FOLDER, f"{filename}_synth.wav")
-            # Synthesize audio using TTS with reference speaker embedding
-            tts_model.tts_to_file(text=final_text, speaker_wav=file_path, file_path=output_path)
+            generate_audio(final_text, output_path)
             generated_file = os.path.basename(output_path)
             flash("Processing Done.")
         except Exception as e:
