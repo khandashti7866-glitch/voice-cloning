@@ -1,7 +1,6 @@
-# app.py
 """
-Streamlit Voice Synthesizer (Python 3.13 Compatible)
-====================================================
+Flask Voice Cloning App (Python 3.10 Compatible)
+================================================
 
 Instructions:
 1. Create a virtual environment:
@@ -10,37 +9,89 @@ Instructions:
 2. Install requirements:
    pip install -r requirements.txt
 3. Run the app:
-   streamlit run app.py
-4. Uploaded files saved in 'uploads/', generated audio in 'generated/'
+   python app.py
+4. Uploaded files are saved in 'uploads/', generated audio in 'generated/'
 
-Note: Uses pyttsx3 offline TTS. No speaker cloning.
+Open-source libraries used:
+- Flask
+- TTS (Coqui)
+- Resemblyzer
+- numpy, scipy, soundfile, werkzeug
+
 Use this system only for lawful, consensual use. Written consent required.
 """
 
 import os
 import csv
 import datetime
-import streamlit as st
-from pathlib import Path
+from flask import Flask, request, render_template_string, send_from_directory, redirect, flash
 from werkzeug.utils import secure_filename
-import pyttsx3
+from pathlib import Path
+from TTS.api import TTS
+from resemblyzer import VoiceEncoder, preprocess_wav
+import soundfile as sf
+import numpy as np
 
-# Configuration
 UPLOAD_FOLDER = "uploads"
 GENERATED_FOLDER = "generated"
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
 ALLOWED_EXTENSIONS = {"wav", "mp3"}
 CONSENT_LOG = "consent_log.csv"
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(GENERATED_FOLDER, exist_ok=True)
 
-# Initialize TTS engine
-tts_engine = pyttsx3.init()
-tts_engine.setProperty("rate", 150)
-tts_engine.setProperty("volume", 1.0)
+app = Flask(__name__)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
+app.secret_key = "replace_with_secure_random_key"
 
-# Utility functions
+# Load models (first run will download pre-trained models)
+try:
+    tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
+    encoder = VoiceEncoder()
+except Exception as e:
+    print("Error loading models:", e)
+    raise
+
+HTML_TEMPLATE = """
+<!doctype html>
+<title>Voice Cloning App</title>
+<h2 style="color:red;">WARNING: Cloning voices without explicit written consent is illegal and prohibited.</h2>
+<form method=post enctype=multipart/form-data>
+  <label>Upload reference audio (wav/mp3, max 10MB):</label><br>
+  <input type=file name=file required><br><br>
+  
+  <label>Text to synthesize (max 500 chars):</label><br>
+  <textarea name=text rows=4 cols=50 maxlength=500 required></textarea><br><br>
+  
+  <label>Speaker Name:</label><br>
+  <input type=text name=speaker_name required><br><br>
+  
+  <label>Your Email:</label><br>
+  <input type=email name=requester_email required><br><br>
+  
+  <input type=checkbox name=consent value="yes" required> I have written consent from the speaker.<br>
+  <input type=checkbox name=not_public value="yes" required> I confirm the speaker is NOT a public figure.<br><br>
+  
+  <input type=submit value="Generate">
+</form>
+
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    <ul style="color:red;">
+    {% for message in messages %}
+      <li>{{ message }}</li>
+    {% endfor %}
+    </ul>
+  {% endif %}
+{% endwith %}
+
+{% if generated_file %}
+<p>Generated file ready: <a href="{{ url_for('download_file', filename=generated_file) }}">{{ generated_file }}</a></p>
+{% endif %}
+"""
+
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -57,45 +108,55 @@ def log_consent(speaker_name, requester_email, filename, ip):
             writer.writerow(header)
         writer.writerow([timestamp, requester_email, speaker_name, filename, ip])
 
-def generate_audio(text, output_path):
-    tts_engine.save_to_file(text, output_path)
-    tts_engine.runAndWait()
+@app.route("/", methods=["GET", "POST"])
+def index():
+    generated_file = None
+    if request.method == "POST":
+        if "file" not in request.files:
+            flash("No file part")
+            return redirect(request.url)
+        file = request.files["file"]
+        if file.filename == "":
+            flash("No selected file")
+            return redirect(request.url)
+        if not allowed_file(file.filename):
+            flash("Invalid file type. Only wav/mp3 allowed.")
+            return redirect(request.url)
+        text = request.form.get("text", "")
+        if len(text) == 0 or len(text) > 500:
+            flash("Text is required and must be <= 500 chars.")
+            return redirect(request.url)
+        consent = request.form.get("consent")
+        not_public = request.form.get("not_public")
+        if consent != "yes":
+            flash("Consent checkbox must be checked.")
+            return redirect(request.url)
+        if not_public != "yes":
+            flash("Cannot process public figure voices.")
+            return redirect(request.url)
+        speaker_name = request.form.get("speaker_name")
+        requester_email = request.form.get("requester_email")
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        file.save(file_path)
+        log_consent(speaker_name, requester_email, filename, request.remote_addr)
 
-# Streamlit UI
-st.title("Voice Synthesizer")
-st.markdown("⚠️ **Warning:** Cloning voices without explicit written consent is illegal and prohibited.")
-
-uploaded_file = st.file_uploader("Upload reference audio (wav/mp3, max 10MB):", type=list(ALLOWED_EXTENSIONS))
-text_to_synthesize = st.text_area("Text to synthesize (max 500 chars):", max_chars=500)
-speaker_name = st.text_input("Speaker Name:")
-requester_email = st.text_input("Your Email:")
-consent = st.checkbox("I have written consent from the speaker.")
-not_public = st.checkbox("I confirm the speaker is NOT a public figure.")
-
-if st.button("Generate"):
-    if uploaded_file is None:
-        st.error("Please upload a reference audio file.")
-    elif not allowed_file(uploaded_file.name):
-        st.error("Invalid file type. Only wav/mp3 allowed.")
-    elif len(text_to_synthesize.strip()) == 0:
-        st.error("Please enter text to synthesize.")
-    elif not consent:
-        st.error("Consent checkbox must be checked.")
-    elif not not_public:
-        st.error("Cannot process public figure voices.")
-    elif speaker_name.strip() == "" or requester_email.strip() == "":
-        st.error("Please fill in speaker name and your email.")
-    else:
         try:
-            filename = secure_filename(uploaded_file.name)
-            file_path = os.path.join(UPLOAD_FOLDER, filename)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            log_consent(speaker_name, requester_email, filename, st.session_state.get("client_ip", "N/A"))
+            wav = preprocess_wav(file_path)
+            embed = encoder.embed_utterance(wav)
+            final_text = prepend_marker(text)
             output_path = os.path.join(GENERATED_FOLDER, f"{filename}_synth.wav")
-            final_text = prepend_marker(text_to_synthesize)
-            generate_audio(final_text, output_path)
-            st.success("Audio generated successfully!")
-            st.download_button("Download Generated Audio", output_path, file_name=f"{filename}_synth.wav")
+            # Synthesize audio using TTS with reference speaker embedding
+            tts_model.tts_to_file(text=final_text, speaker_wav=file_path, file_path=output_path)
+            generated_file = os.path.basename(output_path)
+            flash("Processing Done.")
         except Exception as e:
-            st.error(f"Error during synthesis: {e}")
+            flash(f"Error during synthesis: {e}")
+    return render_template_string(HTML_TEMPLATE, generated_file=generated_file)
+
+@app.route("/generated/<filename>")
+def download_file(filename):
+    return send_from_directory(GENERATED_FOLDER, filename, as_attachment=True)
+
+if __name__ == "__main__":
+    app.run(debug=True)
