@@ -1,6 +1,6 @@
 # app.py
 """
-Flask Voice Cloning App (Host-Friendly Version)
+Flask Voice Cloning App (Ultra-Portable Version)
 ================================================
 
 Instructions:
@@ -13,25 +13,16 @@ Instructions:
    python app.py
 4. Uploaded files are saved in 'uploads/' and generated files in 'generated/'.
 
-Open-source libraries used:
-- Flask
-- pyttsx3 (offline TTS)
-- Resemblyzer (speaker embedding)
-- numpy, scipy, soundfile, werkzeug
-
+Note: This version uses pyttsx3 offline TTS and does NOT perform speaker embedding.
 Use this system only for lawful, consensual use. Operator must obtain written consent.
 """
 
 import os
 import csv
 import datetime
-from flask import Flask, request, render_template_string, send_from_directory, redirect, url_for, flash
+from flask import Flask, request, render_template_string, send_from_directory, redirect, flash
 from werkzeug.utils import secure_filename
-from pathlib import Path
 import pyttsx3
-from resemblyzer import VoiceEncoder, preprocess_wav
-import soundfile as sf
-import numpy as np
 
 UPLOAD_FOLDER = "uploads"
 GENERATED_FOLDER = "generated"
@@ -47,16 +38,9 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 app.secret_key = "replace_with_secure_random_key"
 
-# Load Resemblyzer speaker embedding model
-try:
-    encoder = VoiceEncoder()
-except Exception as e:
-    print("Error loading Resemblyzer model:", e)
-    raise
-
-# Initialize pyttsx3 TTS engine
+# Initialize TTS engine
 tts_engine = pyttsx3.init()
-tts_engine.setProperty("rate", 150)  # speech rate
+tts_engine.setProperty("rate", 150)
 tts_engine.setProperty("volume", 1.0)
 
 HTML_TEMPLATE = """
@@ -106,15 +90,15 @@ def prepend_marker(text):
 def log_consent(speaker_name, requester_email, filename, ip):
     header = ["timestamp", "requester_email", "speaker_name", "uploaded_filename", "client_ip"]
     timestamp = datetime.datetime.utcnow().isoformat()
-    write_header = not Path(CONSENT_LOG).exists()
+    write_header = not os.path.exists(CONSENT_LOG)
     with open(CONSENT_LOG, "a", newline="") as f:
+        import csv
         writer = csv.writer(f)
         if write_header:
             writer.writerow(header)
         writer.writerow([timestamp, requester_email, speaker_name, filename, ip])
 
 def generate_audio(text, output_path):
-    # Save TTS audio with marker
     tts_engine.save_to_file(text, output_path)
     tts_engine.runAndWait()
 
@@ -152,9 +136,6 @@ def index():
         log_consent(speaker_name, requester_email, filename, request.remote_addr)
 
         try:
-            # Load reference audio to validate (Resemblyzer)
-            wav = preprocess_wav(file_path)
-            embed = encoder.embed_utterance(wav)
             final_text = prepend_marker(text)
             output_path = os.path.join(GENERATED_FOLDER, f"{filename}_synth.wav")
             generate_audio(final_text, output_path)
