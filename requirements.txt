@@ -1,8 +1,3 @@
-# requirements.txt
-Flask==2.3.2
+streamlit==1.51.0
 pyttsx3==2.90
-Resemblyzer==0.2.5
-numpy==1.26.0
-scipy==1.11.1
-soundfile==0.12.1
 Werkzeug==2.3.7
