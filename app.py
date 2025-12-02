@@ -1,7 +1,7 @@
 # app.py
 """
-Flask Voice Cloning App
-=======================
+Flask Voice Cloning App (Host-Friendly Version)
+================================================
 
 Instructions:
 1. Create virtual environment:
@@ -11,12 +11,12 @@ Instructions:
    pip install -r requirements.txt
 3. Run the app:
    python app.py
-4. Uploaded files are saved in 'uploads/' and generated files are downloadable from the same directory.
+4. Uploaded files are saved in 'uploads/' and generated files in 'generated/'.
 
 Open-source libraries used:
 - Flask
-- TTS (Coqui TTS)
-- Resemblyzer
+- pyttsx3 (offline TTS)
+- Resemblyzer (speaker embedding)
 - numpy, scipy, soundfile, werkzeug
 
 Use this system only for lawful, consensual use. Operator must obtain written consent.
@@ -28,33 +28,37 @@ import datetime
 from flask import Flask, request, render_template_string, send_from_directory, redirect, url_for, flash
 from werkzeug.utils import secure_filename
 from pathlib import Path
-import numpy as np
-import soundfile as sf
-from TTS.api import TTS
+import pyttsx3
 from resemblyzer import VoiceEncoder, preprocess_wav
+import soundfile as sf
+import numpy as np
 
 UPLOAD_FOLDER = "uploads"
+GENERATED_FOLDER = "generated"
 MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB
 ALLOWED_EXTENSIONS = {"wav", "mp3"}
+CONSENT_LOG = "consent_log.csv"
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs("generated", exist_ok=True)
-CONSENT_LOG = "consent_log.csv"
+os.makedirs(GENERATED_FOLDER, exist_ok=True)
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 app.secret_key = "replace_with_secure_random_key"
 
-# Load pre-trained models (paths can be changed here)
+# Load Resemblyzer speaker embedding model
 try:
-    tts = TTS(model_name="tts_models/en/vctk/vits")  # Change model here if desired
-    encoder = VoiceEncoder()  # Resemblyzer encoder
+    encoder = VoiceEncoder()
 except Exception as e:
-    print("Error loading models:", e)
+    print("Error loading Resemblyzer model:", e)
     raise
 
-# HTML Template
+# Initialize pyttsx3 TTS engine
+tts_engine = pyttsx3.init()
+tts_engine.setProperty("rate", 150)  # speech rate
+tts_engine.setProperty("volume", 1.0)
+
 HTML_TEMPLATE = """
 <!doctype html>
 <title>Voice Cloning App</title>
@@ -109,6 +113,11 @@ def log_consent(speaker_name, requester_email, filename, ip):
             writer.writerow(header)
         writer.writerow([timestamp, requester_email, speaker_name, filename, ip])
 
+def generate_audio(text, output_path):
+    # Save TTS audio with marker
+    tts_engine.save_to_file(text, output_path)
+    tts_engine.runAndWait()
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     generated_file = None
@@ -143,14 +152,12 @@ def index():
         log_consent(speaker_name, requester_email, filename, request.remote_addr)
 
         try:
-            # Load reference audio
+            # Load reference audio to validate (Resemblyzer)
             wav = preprocess_wav(file_path)
             embed = encoder.embed_utterance(wav)
-            # Prepend marker
             final_text = prepend_marker(text)
-            # Generate audio
-            output_path = os.path.join("generated", f"{filename}_synth.wav")
-            tts.tts_to_file(text=final_text, speaker_wav=file_path, file_path=output_path)
+            output_path = os.path.join(GENERATED_FOLDER, f"{filename}_synth.wav")
+            generate_audio(final_text, output_path)
             generated_file = os.path.basename(output_path)
             flash("Processing Done.")
         except Exception as e:
@@ -159,7 +166,7 @@ def index():
 
 @app.route("/generated/<filename>")
 def download_file(filename):
-    return send_from_directory("generated", filename, as_attachment=True)
+    return send_from_directory(GENERATED_FOLDER, filename, as_attachment=True)
 
 if __name__ == "__main__":
     app.run(debug=True)
